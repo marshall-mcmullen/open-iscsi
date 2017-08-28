@@ -335,7 +335,7 @@ __session_create(node_rec_t *rec, struct iscsi_transport *t)
 	}
 	log_debug(2, "Allocted session %p", session);
 
-	INIT_LIST_HEAD(&session->list);
+	INIT_HLIST_NODE(&session->hln);
 	session->t = t;
 	session->reopen_qtask.mgmt_ipc_fd = -1;
 	session->id = -1;
@@ -406,7 +406,6 @@ __session_create(node_rec_t *rec, struct iscsi_transport *t)
 		session->hostno = hostno;
 	}
 
-	list_add_tail(&session->list, &t->sessions);
 	return session;
 }
 
@@ -432,7 +431,7 @@ static void
 __session_destroy(iscsi_session_t *session)
 {
 	log_debug(1, "destroying session\n");
-	list_del(&session->list);
+	hlist_del_init(&session->hln);
 	iscsi_flush_context_pool(session);
 	session_release(session);
 }
@@ -963,13 +962,19 @@ static void conn_send_nop_out(void *data)
 void free_initiator(void)
 {
 	struct iscsi_transport *t;
-	iscsi_session_t *session, *tmp;
+	iscsi_session_t *session;
+	int i;
+	struct hlist_head *head;
+	struct hlist_node *node, *node2;
 
 	list_for_each_entry(t, &transports, list) {
-		list_for_each_entry_safe(session, tmp, &t->sessions, list) {
-			list_del(&session->list);
-			iscsi_flush_context_pool(session);
-			session_release(session);
+		for (i = 0; i < 1 << ISCSI_TRANSPORT_SESSION_HASH_BITS; ++i) {
+			head = &t->sessions[i];
+			hlist_for_each_entry_safe(session, node, node2, head, hln) {
+				hlist_del_init(&session->hln);
+				iscsi_flush_context_pool(session);
+				session_release(session);
+			}
 		}
 	}
 
@@ -1340,6 +1345,8 @@ static void session_conn_recv_pdu(void *data)
 	}
 }
 
+// SOLIDFIRE -- This function isn't needed.
+#if 0
 static void session_increase_wq_priority(struct iscsi_session *session)
 {
 	DIR *proc_dir;
@@ -1422,6 +1429,7 @@ fail:
 		  "READ/WRITE throughout and latency could be "
 		  "affected.\n", session->id);
 }
+#endif
 
 static int session_ipc_create(struct iscsi_session *session)
 {
@@ -1450,8 +1458,14 @@ retry_create:
 	}
 
 	if (!err) {
+		hlist_del_init(&session->hln);
+		hlist_add_head(&session->hln, &session->t->sessions[hash_32(session->id, ISCSI_TRANSPORT_SESSION_HASH_BITS)]);
 		session->hostno = host_no;
+
+// SOLIDFIRE -- This function has been removed.
+#if 0
 		session_increase_wq_priority(session);
+#endif
 	}
 	return err;
 }
@@ -1723,6 +1737,8 @@ static int iscsi_sched_ev_context(struct iscsi_ev_context *ev_context,
 	return 0;
 }
 
+// SOLIDFIRE -- These functions aren't needed.
+#if 0
 static iscsi_session_t* session_find_by_rec(node_rec_t *rec)
 {
 	struct iscsi_transport *t;
@@ -1757,6 +1773,7 @@ static int session_is_running(node_rec_t *rec)
 
 	return 0;
 }
+#endif
 
 int
 session_login_task(node_rec_t *rec, queue_task_t *qtask)
@@ -1766,12 +1783,14 @@ session_login_task(node_rec_t *rec, queue_task_t *qtask)
 	struct iscsi_transport *t;
 	int rc;
 
+#if 0
 	if (session_is_running(rec)) {
 		if (rec->session.multiple)
 			log_debug(2, "Adding a copy of an existing session");
 		else
 			return ISCSI_ERR_SESS_EXISTS;
 	}
+#endif
 
 	t = iscsi_sysfs_get_transport_by_name(rec->iface.transport_name);
 	if (!t)
@@ -1897,6 +1916,8 @@ iscsi_sync_session(node_rec_t *rec, queue_task_t *qtask, uint32_t sid)
 		return ISCSI_ERR_LOGIN;
 
 	session->id = sid;
+	hlist_del_init(&session->hln);
+	hlist_add_head(&session->hln, &t->sessions[hash_32(session->id, ISCSI_TRANSPORT_SESSION_HASH_BITS)]);
 	session->hostno = iscsi_sysfs_get_host_no_from_sid(sid, &err);
 	if (err) {
 		log_error("Could not get hostno for session %d\n", sid);

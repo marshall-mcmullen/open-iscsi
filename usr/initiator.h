@@ -196,7 +196,7 @@ struct iscsi_transport;
 
 /* daemon's session structure */
 typedef struct iscsi_session {
-	struct list_head list;
+	struct hlist_node hln;
 	uint32_t id;
 	uint32_t hostno;
 	char netdev[IFNAMSIZ];
